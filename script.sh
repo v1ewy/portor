@@ -5,14 +5,14 @@ parse_function() {
     port=0
     r_ip=0
     l_ip=0
-    if [[ ! $line =~ [0-9] ]]; then
+    if [[ ! $line =~ [0-9] || $line == "*->"* ]]; then
         echo "-1 0 0"
         return
     fi
     if [[ $line =~ \[.*\] ]]; then
         echo "-1 0 0"
         return
-    fi
+    fi  
     if [[ $line =~ \* ]]; then
         port="${line#*:}"
         l_ip="0.0.0.0"
@@ -30,42 +30,49 @@ parse_function() {
     echo "$port $l_ip $r_ip"
 }       
 
-ports=()
-processes=()
-pids=()
-protocols=()
-r_ips=()
-l_ips=()
-states=()
+INTERVAL=3
 
-for i in {0..65535}; do
-    ports[i]=0;
-    processes[i]=0;
-    pids[i]=0;
-    protocols[i]=0;
-    r_ips[i]=0;
-    l_ips[i]=0;
-    states[i]=0;
-done
+trap "echo -e '\nExiting...'; exit 0" INT
 
+tput smcup
+tput civis
 
-while read -r line; do
-    read -r port l_ip r_ip < <(parse_function "$(echo "$line" | awk '{print $9}')")
-    if [[ $port -ne -1 ]]; then
-        ports[port]=$port
-        l_ips[port]=$l_ip
-        r_ips[port]=$r_ip
-        processes[port]=$(echo "$line" | awk '{print $1}')
-        pids[port]=$(echo "$line" | awk '{print $2}')
-        protocols[port]=$(echo "$line" | awk '{print $8}')
-        states[port]=$(echo "$line" | awk '{print ($10 ? $10 : "(LISTEN)")}')
-    fi
-done < <(lsof -i4 -P -n | tail -n +2)
+while true; do
+    active_ports=""
 
-printf "%-5s | %-5s | %-10s | %-10s | %-20s | %-20s | %-20s\n" "PORT" "PID" "PROCESS" "PROTOCOL" "LOCAL IP" "REMOTE IP:PORT" "STATE"
+    while read -r line; do
+        read -r port l_ip r_ip < <(parse_function "$(echo "$line" | awk '{print $9}')")
+        if [[ $port -ne -1 ]]; then
+            eval "tmp_ports_$port=\"$port\""
+            eval "tmp_l_ips_$port=\"$l_ip\""
+            eval "tmp_r_ips_$port=\"$r_ip\""
+            eval "tmp_processes_$port=\"$(echo "$line" | awk '{print $1}')\""
+            eval "tmp_pids_$port=\"$(echo "$line" | awk '{print $2}')\""
+            eval "tmp_protocols_$port=\"$(echo "$line" | awk '{print $8}')\""
+            eval "tmp_states_$port=\"$(echo "$line" | awk '{print ($10 ? $10 : "(LISTEN)")}')\""
 
-for i in {0..65535}; do
-    if [[ ${ports[i]} -ne 0 ]]; then
-        printf "%-5s | %-5s | %-10s | %-10s | %-20s | %-20s | %-20s\n" "${ports[i]}" "${pids[i]}" "${processes[i]}" "${protocols[i]}" "${l_ips[i]}" "${r_ips[i]}" "${states[i]}"
-    fi
+            active_ports="$active_ports $port"
+        fi
+    done < <(lsof -i4 -P -n | tail -n +2)
+
+    printf "\033[H\033[2J\033[3J"
+    printf "Updating every %s sec. To exit, press Ctrl+C\n" "$INTERVAL"
+    printf "%-5s | %-5s | %-10s | %-10s | %-20s | %-20s | %-20s\n" "PORT" "PID" "PROCESS" "PROTOCOL" "LOCAL IP" "REMOTE IP:PORT" "STATE"
+
+    sorted_ports=$(echo "$active_ports" | tr ' ' '\n' | sort -n | uniq)
+
+    for i in $sorted_ports; do
+        eval "p_port=\$tmp_ports_$i"
+        eval "p_pid=\$tmp_pids_$i"
+        eval "p_proc=\$tmp_processes_$i"
+        eval "p_proto=\$tmp_protocols_$i"
+        eval "p_local=\$tmp_l_ips_$i"
+        eval "p_remote=\$tmp_r_ips_$i"
+        eval "p_state=\$tmp_states_$i"
+
+        printf "%-5s | %-5s | %-10s | %-10s | %-20s | %-20s | %-20s\n" "$p_port" "$p_pid" "$p_proc" "$p_proto" "$p_local" "$p_remote" "$p_state"
+        unset "tmp_ports_$i" "tmp_pids_$i" "tmp_processes_$i" "tmp_protocols_$i" "tmp_l_ips_$i" "tmp_r_ips_$i" "tmp_states_$i"
+    done
+
+    sleep "$INTERVAL"
 done
